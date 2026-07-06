@@ -1,0 +1,6 @@
+{
+  "name": "Phishing Detector",
+  "description": "Real-time phishing detection app utilizing AI-driven URL heuristics, domain reputation, and SSL signal scoring.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
