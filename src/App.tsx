@@ -18,6 +18,7 @@ import {
   Sparkles
 } from "lucide-react";
 import { AnalysisResponse, HistoryItem } from "./types";
+import { analyzeLocalHeuristicsClient } from "./utils/localAnalyzer";
 
 export default function App() {
   const [inputUrl, setInputUrl] = useState("");
@@ -114,8 +115,14 @@ export default function App() {
       setIsLoading(false);
 
     } catch (err: any) {
-      console.error(err);
-      setError(err?.message || "Connection failed. Please check if backend is online.");
+      console.warn("Backend API not reachable. Falling back to client-side local analyzer.", err);
+      
+      // Run the client-side analyzer directly
+      const clientData = analyzeLocalHeuristicsClient(targetUrl);
+      clientData.fallbackReason = "GitHub Pages Static Client-Side Mode: URL is being analyzed in real-time directly inside your browser.";
+      
+      setResult(clientData);
+      saveToHistory(targetUrl, clientData.score, clientData.badge, clientData.badgeColor);
       setIsLoading(false);
     }
   };

@@ -1,43 +1,7 @@
-import express from "express";
-import path from "path";
-import dotenv from "dotenv";
-import { GoogleGenAI, Type } from "@google/genai";
-import { createServer as createViteServer } from "vite";
-import { AnalysisResponse } from "./src/types";
+import { AnalysisResponse } from "../types";
 
-// Load environment variables
-dotenv.config();
-
-const app = express();
-const PORT = 3000;
-
-// Parse JSON bodies
-app.use(express.json());
-
-// Initialize Gemini client lazily
-let ai: GoogleGenAI | null = null;
-const initGemini = () => {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (apiKey && apiKey !== "MY_GEMINI_API_KEY") {
-    try {
-      ai = new GoogleGenAI({
-        apiKey: apiKey,
-        httpOptions: {
-          headers: {
-            'User-Agent': 'aistudio-build',
-          }
-        }
-      });
-      console.log("Gemini API client successfully initialized.");
-    } catch (err) {
-      console.error("Failed to initialize Gemini client:", err);
-      ai = null;
-    }
-  }
-};
-
-// Heuristic fallback analyzer for offline or missing-key scenarios
-const analyzeLocalHeuristics = (inputUrl: string): AnalysisResponse => {
+// Client-side heuristics analyzer for static hosts (like GitHub Pages)
+export const analyzeLocalHeuristicsClient = (inputUrl: string): AnalysisResponse => {
   let normalizedUrl = inputUrl.trim();
   if (!/^https?:\/\//i.test(normalizedUrl)) {
     normalizedUrl = "https://" + normalizedUrl;
@@ -53,7 +17,6 @@ const analyzeLocalHeuristics = (inputUrl: string): AnalysisResponse => {
     pathname = parsed.pathname.toLowerCase();
     protocol = parsed.protocol.replace(":", "").toLowerCase();
   } catch (e) {
-    // Basic extraction if URL constructor fails
     const match = normalizedUrl.match(/^(https?):\/\/([^/]+)(.*)$/i);
     if (match) {
       protocol = match[1].toLowerCase();
@@ -86,7 +49,6 @@ const analyzeLocalHeuristics = (inputUrl: string): AnalysisResponse => {
     'security', 'auth', 'authorize', 'confirm', 'dispute', 'refund', 'webscr', 'cmd'
   ];
 
-  // 1. Is it a known safe domain directly?
   const isDirectSafe = safeDomains.some(d => hostname === d || hostname.endsWith("." + d));
 
   let score = 0;
@@ -94,7 +56,6 @@ const analyzeLocalHeuristics = (inputUrl: string): AnalysisResponse => {
   let isImpersonation = false;
   let detectedBrand = "";
 
-  // 2. SSL Protocol check
   const isSslInsecure = protocol === "http";
   if (isSslInsecure) {
     score += 2;
@@ -103,7 +64,6 @@ const analyzeLocalHeuristics = (inputUrl: string): AnalysisResponse => {
     features.push("Enforced HTTPS SSL/TLS");
   }
 
-  // 3. Subdomain depth
   const domainParts = hostname.replace("www.", "").split(".");
   const subdomainCount = Math.max(0, domainParts.length - 2);
   if (subdomainCount > 1) {
@@ -113,7 +73,6 @@ const analyzeLocalHeuristics = (inputUrl: string): AnalysisResponse => {
     features.push("Standard subdomain layout");
   }
 
-  // 4. Keyword matches in host or path
   const hostKeywordsMatched = riskKeywords.filter(k => hostname.includes(k));
   const pathKeywordsMatched = riskKeywords.filter(k => pathname.includes(k));
 
@@ -126,7 +85,6 @@ const analyzeLocalHeuristics = (inputUrl: string): AnalysisResponse => {
     features.push(`Suspicious pathname keywords: ${pathKeywordsMatched.slice(0, 2).join(", ")}`);
   }
 
-  // 5. Brand Impersonation check (e.g. wellsfargo-update.com is NOT wellsfargo.com but contains wellsfargo)
   if (!isDirectSafe) {
     for (const brand of safeBrands) {
       if (hostname.includes(brand)) {
@@ -142,10 +100,8 @@ const analyzeLocalHeuristics = (inputUrl: string): AnalysisResponse => {
     features.push(`Potential Brand Impersonation (${detectedBrand})`);
   }
 
-  // Final score capping and safe domain overriding
   if (isDirectSafe) {
-    score = hostname.includes("github.com") ? 2 : 1; // Match github repo exactly as screenshot
-    // Keep features list highly reassuring
+    score = hostname.includes("github.com") ? 2 : 1;
     features.length = 0;
     features.push("Common TLD (.com)");
     features.push("Low character entropy on domain");
@@ -155,7 +111,6 @@ const analyzeLocalHeuristics = (inputUrl: string): AnalysisResponse => {
     score = Math.min(10, Math.max(1, score));
   }
 
-  // Determine Badge & Verdict
   let badge: "SAFE" | "SUSPICIOUS" | "DANGER" = "SAFE";
   let badgeColor: "green" | "yellow" | "red" = "green";
   let classifierVerdict: "LEGITIMATE" | "SUSPICIOUS" | "PHISHING" = "LEGITIMATE";
@@ -197,7 +152,6 @@ const analyzeLocalHeuristics = (inputUrl: string): AnalysisResponse => {
     }
   }
 
-  // Pack details
   const domainAuthorityValue = isDirectSafe ? hostname : (score >= 7 ? "Suspicious / Unranked" : "Unranked (Low Rep)");
   const domainAuthorityExp = isDirectSafe 
     ? `The domain is a global top-tier site with massive historical traffic and a positive reputation.`
@@ -235,162 +189,3 @@ const analyzeLocalHeuristics = (inputUrl: string): AnalysisResponse => {
     isFallback: true
   };
 };
-
-// API Endpoint for Analyzing a URL
-app.post("/api/analyze", async (req, res) => {
-  const url = req.body?.url;
-  if (!url || typeof url !== "string") {
-    return res.status(400).json({ error: "A valid 'url' field is required in the body." });
-  }
-
-  console.log(`Analyzing URL: ${url}`);
-
-  // Lazily init Gemini if possible
-  if (!ai) {
-    initGemini();
-  }
-
-  if (ai) {
-    try {
-      const response = await ai.models.generateContent({
-        model: "gemini-3.5-flash",
-        contents: `Perform a comprehensive phishing and security analysis for the URL: "${url}".
-Analyze the URL's structure, domain reputation, potential brand impersonation, SSL indicators, and heuristic pattern matching.`,
-        config: {
-          systemInstruction: "You are an elite cyber-security neural-network phishing detection engine. Your purpose is to evaluate URLs and output highly accurate, structured risk evaluations. You must carefully distinguish safe global services (like github.com, google.com, paypal.com, wellsfargo.com) from malicious typosquatting or brand-spoofing variants (e.g., login-paypal.com, secure-g00gle.net, wellsfarg0.co). Provide clear, professional, and visually elegant responses.",
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              score: { 
-                type: Type.INTEGER, 
-                description: "Risk score from 0 (completely safe) to 10 (extremely malicious phishing)" 
-              },
-              badge: { 
-                type: Type.STRING, 
-                description: "Must be 'SAFE', 'SUSPICIOUS', or 'DANGER'" 
-              },
-              badgeColor: { 
-                type: Type.STRING, 
-                description: "Must be 'green', 'yellow', or 'red'" 
-              },
-              verdictText: { 
-                type: Type.STRING, 
-                description: "Deep explanation of the verdict, start with 'Verdict: '" 
-              },
-              recommendationText: { 
-                type: Type.STRING, 
-                description: "Specific security action recommendations for the user" 
-              },
-              classifierVerdict: { 
-                type: Type.STRING, 
-                description: "Must be 'LEGITIMATE', 'SUSPICIOUS', or 'PHISHING'" 
-              },
-              confidence: { 
-                type: Type.STRING, 
-                description: "Confidence percentage, e.g. '99.8%'" 
-              },
-              features: {
-                type: Type.ARRAY,
-                items: { type: Type.STRING },
-                description: "3 to 4 technical feature tags explaining classification (e.g. 'Low character entropy', 'Known legitimate path structure')"
-              },
-              mlSummary: { 
-                type: Type.STRING, 
-                description: "Italicized ML ensemble explanation summarizing model weightings" 
-              },
-              domainAuthority: {
-                type: Type.OBJECT,
-                properties: {
-                  value: { type: Type.STRING },
-                  explanation: { type: Type.STRING }
-                },
-                required: ["value", "explanation"]
-              },
-              sslSecurity: {
-                type: Type.OBJECT,
-                properties: {
-                  value: { type: Type.STRING },
-                  explanation: { type: Type.STRING }
-                },
-                required: ["value", "explanation"]
-              },
-              heuristicPattern: {
-                type: Type.OBJECT,
-                properties: {
-                  value: { type: Type.STRING },
-                  explanation: { type: Type.STRING }
-                },
-                required: ["value", "explanation"]
-              },
-              subdomainDepth: {
-                type: Type.OBJECT,
-                properties: {
-                  value: { type: Type.STRING },
-                  explanation: { type: Type.STRING }
-                },
-                required: ["value", "explanation"]
-              }
-            },
-            required: [
-              "score", "badge", "badgeColor", "verdictText", "recommendationText",
-              "classifierVerdict", "confidence", "features", "mlSummary",
-              "domainAuthority", "sslSecurity", "heuristicPattern", "subdomainDepth"
-            ]
-          }
-        }
-      });
-
-      const responseText = response.text;
-      if (responseText) {
-        const parsedResponse = JSON.parse(responseText.trim()) as AnalysisResponse;
-        parsedResponse.isFallback = false;
-        return res.json(parsedResponse);
-      }
-    } catch (err: any) {
-      const errStr = String(err?.message || err);
-      const isUnavailable = errStr.includes("503") || errStr.toLowerCase().includes("demand") || errStr.toLowerCase().includes("unavailable") || err?.status === 503;
-      if (isUnavailable) {
-        console.warn(`[Gemini Overloaded] High demand spike: ${errStr}. Automatically switched to local security rules engine.`);
-      } else {
-        console.warn(`[Gemini Fallback] Analysis failed: ${errStr}. Switched to local heuristics rules engine.`);
-      }
-
-      const localAnalysis = analyzeLocalHeuristics(url);
-      localAnalysis.fallbackReason = isUnavailable 
-        ? "The live Gemini AI model is currently experiencing extremely high global demand. Showing advanced local heuristic scan instead."
-        : "Seamless fallback to advanced local heuristic scan (Gemini connection offline or pending configuration).";
-      return res.json(localAnalysis);
-    }
-  }
-
-  // Fallback if client is not initialized
-  const localAnalysis = analyzeLocalHeuristics(url);
-  localAnalysis.fallbackReason = "Local heuristic scan active. To enable live Gemini AI, please make sure your GEMINI_API_KEY is configured under Settings > Secrets.";
-  return res.json(localAnalysis);
-});
-
-// Configure Vite integration or static file serving
-const startServer = async () => {
-  if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
-    app.get("*", (req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
-    });
-  }
-
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Phishing Detector backend listening at http://0.0.0.0:${PORT}`);
-  });
-};
-
-startServer().catch((err) => {
-  console.error("Failed to start server:", err);
-});
