@@ -34,7 +34,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'npm'
 
       - name: Install Dependencies
         run: |
@@ -48,9 +47,6 @@ jobs:
 
       - name: Build Production App
         run: npm run build
-
-      - name: Setup Pages Configuration
-        uses: actions/configure-pages@v4
 
       - name: Upload Build Artifacts
         uses: actions/upload-pages-artifact@v3
